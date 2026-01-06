@@ -1,0 +1,132 @@
+name: Deploy to Production
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_DIR: "engine/target"
+      BINARY_NAME: "cleoselene"
+      SERVER_USER: "root"
+      SERVER_IP: "cleoselene.com"
+      REMOTE_DIR: "/opt/cleoselene"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libssl-dev pkg-config python3-pip rsync
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H cleoselene.com >> ~/.ssh/known_hosts
+
+      - name: Run Game Tests
+        run: |
+          cargo run --manifest-path engine/Cargo.toml -p cleoselene -- games/astro-maze/run_tests.lua --test
+
+      - name: Build Release Binary (Linux)
+        run: |
+          echo "📦 Building Linux binary..."
+          # Build directly on the runner (Ubuntu)
+          cargo build --release --manifest-path engine/Cargo.toml -p cleoselene
+          
+          # Prepare artifact directory structure expected by rsync logic
+          mkdir -p engine/target_linux/release
+          cp engine/target/release/cleoselene engine/target_linux/release/cleoselene
+          
+          # Prepare Downloads folder (Linux only for now on CI)
+          mkdir -p website/downloads
+          cp engine/target_linux/release/cleoselene website/downloads/cleoselene-linux
+
+      - name: Generate Website
+        run: |
+          echo "📄 Generating Website..."
+          pip3 install markdown --quiet || echo "⚠️ Failed to install markdown lib"
+          python3 ops/render_manual.py
+
+      - name: Deploy to Server
+        run: |
+          echo "📂 Connecting to server..."
+          ssh $SERVER_USER@$SERVER_IP "mkdir -p $REMOTE_DIR"
+
+          echo "🛑 Stopping existing server..."
+          ssh $SERVER_USER@$SERVER_IP "pkill -x $BINARY_NAME || true"
+
+          echo "📤 Uploading Files via rsync..."
+          
+          # Upload Engine Binary
+          rsync -avz $TARGET_DIR/release/$BINARY_NAME $SERVER_USER@$SERVER_IP:$REMOTE_DIR/
+          
+          # Upload Downloads (Linux binary)
+          rsync -avz website/downloads $SERVER_USER@$SERVER_IP:$REMOTE_DIR/website/
+          
+          # Upload Games
+          rsync -avz games $SERVER_USER@$SERVER_IP:$REMOTE_DIR/
+          
+          # Upload Website Assets
+          rsync -avz website/index.html website/install.sh website/logo.svg $SERVER_USER@$SERVER_IP:$REMOTE_DIR/website/
+          
+          # Package and Upload Game Client Assets
+          echo "📦 Packaging Game Client..."
+          mkdir -p website/game-client
+          cp -r engine/client/* website/game-client/
+          rsync -avz website/game-client $SERVER_USER@$SERVER_IP:$REMOTE_DIR/website/
+          
+          # Upload Ops Scripts
+          rsync -avz ops $SERVER_USER@$SERVER_IP:$REMOTE_DIR/
+
+          echo "🔧 Configuring Caddy..."
+          ssh $SERVER_USER@$SERVER_IP "cat > /etc/caddy/Caddyfile <<EOF
+          cleoselene.com {
+              root * /opt/game-server/website
+              file_server
+              
+              rewrite /install /install.sh
+              rewrite /install-linux /install.sh
+              rewrite /install-macos /install.sh
+              
+              redir /astro-maze /astro-maze/
+
+              handle_path /astro-maze/* {
+                  root * /opt/game-server/website/game-client
+                  file_server
+                  try_files {path} index.html
+              }
+              
+              handle /ws {
+                  reverse_proxy localhost:3425
+              }
+              
+              handle /assets/* {
+                  reverse_proxy localhost:3425
+              }
+          }
+          EOF
+          systemctl reload caddy
+          "
+
+          echo "🚀 Starting server..."
+          ssh $SERVER_USER@$SERVER_IP "
+              cd $REMOTE_DIR
+              chmod +x $BINARY_NAME
+              ulimit -n 65535
+              nohup ./$BINARY_NAME games/astro-maze/main.lua --port 3425 --base-path /astro-maze > server.log 2>&1 &
+              echo "Server PID: $!"
+          "

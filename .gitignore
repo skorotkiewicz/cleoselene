@@ -1,0 +1,43 @@
+# Rust
+target/
+target_linux/
+**/*.rs.bk
+Cargo.lock
+
+# System
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Website
+website/downloads/
+website/game-client/
+index.html
+
+# Playwright MCP
+.playwright-mcp/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+*.log.*
+
+# Temp
+tmp/
+temp/
+
+# Deployment / Sensitive
+*.pem
+*.key
+id_rsa
+server_ip.txt
+.env
+
+# Gemini
+.gemini*
