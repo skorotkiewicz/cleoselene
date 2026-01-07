@@ -89,7 +89,6 @@ struct AppState {
     assets_dir: PathBuf,
     instance_id: String,
     tx_debug: Option<mpsc::Sender<(String, oneshot::Sender<String>)>>,
-    custom_client_dir: Option<PathBuf>,  // Custom client directory (--client)
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -199,7 +198,6 @@ async fn main() {
         assets_dir: assets_dir.clone(),
         instance_id,
         tx_debug,
-        custom_client_dir: custom_client_dir.clone(),
     });
 
     // Build router based on whether custom client is used
